@@ -1,4 +1,5 @@
 # Import relevant packages
+import matplotlib as mpl
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -12,6 +13,9 @@ import seaborn as sns
 
 # Path mapping to data folder
 data_folder = '../../data'
+
+# Results folder
+results_folder = '../../results'
 
 # Read in industry production sheets
 industry_prod_sheets = list(pd.read_excel(data_folder + '/heavy_industry_production.xlsx', sheet_name = None).keys())
@@ -75,7 +79,7 @@ ind_prod_long = ind_prod.melt(id_vars = ['economy', 'item', 'unit'],
                               var_name = 'year', 
                               value_name = 'production')
 
-economies = ind_prod_long['economy'].unique()                              
+economy_codes = ind_prod_long['economy'].unique()                              
 
 # Define a new function that will add a column to ind_prod_long that can then be used to match to IEA_industry_long
 
@@ -91,26 +95,90 @@ def item_match(dataframe):
 
     return x
 
+# Now create a new variable that is the same as that in IEA_industry_long (from above function)
+
 ind_prod_long['flow'] = ind_prod_long.apply(item_match, axis = 1)
 
-enprod_long = IEA_industry_long.merge(ind_prod_long, how = 'left', on = ['economy', 'year', 'flow'])
+# Change year datatype in both production and energy data frames
+ind_prod_long['year'] = pd.to_datetime(ind_prod_long['year'], format = '%Y').dt.year
+IEA_industry_long['year'] = pd.to_datetime(IEA_industry_long['year'], format = '%Y').dt.year
+
+# Create new dataframe with all relevant data for energy productivity
+enprod_long = IEA_industry_long.merge(ind_prod_long, how = 'outer', on = ['economy', 'year', 'flow'])
 
 enprod_long.rename(columns = {'unit_x': 'unit_energy', 
                               'unit_y': 'unit_production'}, inplace = True)
 
-enprod_long = enprod_long[['economy', 'year', 'flow', 'product', 'unit_energy', 'energy', 'unit_production', 'production']]
+enprod_long = enprod_long[['economy', 'year', 'flow', 'product', 'unit_energy', 'energy', 'unit_production', 'production']]\
+    .reset_index(drop = True)
 
+# There are some alpha vairables in 'energy' column; change to float (coerce errors to NaN)
+enprod_long['energy'] = pd.to_numeric(enprod_long['energy'], errors = 'coerce')
+enprod_long['economy'] = enprod_long['economy'].astype('str')
 
+# Replace zeroes in energy and production column with np.nan
+zero_cols = ['energy', 'production']
+
+enprod_long[zero_cols] = enprod_long[zero_cols].replace({0: np.nan})
+
+# Now create energy productivity column
+# Energy productivity is output/energy
+# Which is the inverse of energy intensity: energy/output
+# General improvements will see EP trend up while EI will trend down
+
+enprod_long['energy_productivity'] = enprod_long['production'] / enprod_long['energy']
+enprod_long['energy_intensity'] = enprod_long['energy'] / enprod_long['production']
 
 # Charts
 
-Aus_steel = ind_prod_long[(ind_prod_long['economy'] == '01_AUS') & (ind_prod_long['item'] == 'steel_production')]
-Aus_cement = ind_prod_long[(ind_prod_long['economy'] == '01_AUS') & (ind_prod_long['item'] == 'cement_production')]
-# Now make some plots of production
+# overwrite
+# economy_codes = ['01_AUS']
 
-fig, [ax1, ax2] = plt.subplots(2, 1, figsize = (8,5))
- 
-ax1.plot('year', 'production', data = Aus_steel)
-ax2.plot('year', 'production', data = Aus_cement)
+# Read in economy dictionary for charting
 
-plt.show()
+economy_dict = pd.read_csv(data_folder + '/economy_dict.csv', header = 0, index_col = 0)\
+    .squeeze('columns').to_dict()
+
+# APEC economies for analysis (economies defined above)
+
+for economy in economy_codes:
+    steel_df = enprod_long[(enprod_long['economy'] == economy) &
+                           (enprod_long['product'] == 'Total') &
+                           (enprod_long['flow'] == 'Iron and steel')].copy().reset_index(drop = True)
+
+    plt.style.use('seaborn-whitegrid')
+
+    # Grab economy name rather than code for charts 
+    location = pd.Series(economy).map(economy_dict).index[0]
+    economy_name = pd.Series(economy).map(economy_dict).loc[location]
+
+    fig, axs = plt.subplots(3, 1, figsize = (8, 10))
+
+    axs[0].plot('year', 'energy', data = steel_df)
+    axs[1].plot('year', 'production', data = steel_df)
+    axs[2].plot('year', 'energy_productivity', data = steel_df)
+
+    # labels
+    axs[0].set_title(economy_name + ' iron and steel energy consumption')
+    axs[0].yaxis.set_major_formatter(mpl.ticker.StrMethodFormatter('{x:,.0f}'))
+    axs[0].set_xlabel('Year')
+    axs[0].set_ylabel('Energy consumption (TJ)')
+    axs[0].margins(x = 0)
+    axs[0].set_ylim(bottom = 0)
+
+    axs[1].set_title(economy_name + ' steel production')
+    axs[1].yaxis.set_major_formatter(mpl.ticker.StrMethodFormatter('{x:,.0f}'))
+    axs[1].set_xlabel('Year')
+    axs[1].set_ylabel('Steel production (thousand tonnes)')
+    axs[1].margins(x = 0)
+    axs[1].set_ylim(bottom = 0)
+
+    axs[2].set_title(economy_name + ' steel energy productivity')
+    axs[2].set_xlabel('Year')
+    axs[2].margins(x = 0)
+    axs[2].set_ylabel('Energy productivity')
+    axs[2].set_ylim(bottom = 0)
+
+    plt.tight_layout()
+
+    plt.savefig(results_folder + '/steel/' + economy + '_steel.png', dpi = 600)
